@@ -1,4 +1,4 @@
-# (How to detect when the client closes the connection?)[http://stefan.buettcher.org/cs/conn_closed.html]
+# [How to detect when the client closes the connection?](http://stefan.buettcher.org/cs/conn_closed.html)
 
 The solution to the problem is called recv, and it does a wonderful job. The trick is that recv supports two very nice flags: MSG_PEEK tells recv to not remove anything from the stream, while MSG_DONTWAIT makes the function return immediately if there is no data available to be read. Below, you find a code snippet that accepts a new client connection and spawns a new process that responds to queries received over that connection. The parent process waits until the socket has been closed. This can either be the case because the child process has finished execution (and closed the socket) or because the client has closed the socket before the child process could finish its task. 
 
