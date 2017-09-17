@@ -2,6 +2,8 @@
                                    NI_MAXSERV from <netdb.h> */
 #include "csapp.h"
 #include <cstring>
+#include <sys/epoll.h>
+#include <fcntl.h>
 #include <netdb.h>
 #include <netinet/in.h>
 #include <pthread.h>
@@ -32,6 +34,9 @@ using std::cout;
 using std::endl;
 using std::string;
 using std::vector;
+
+
+static volatile sig_atomic_t gotSigio = 0;
 
 class mchat {
 public:
@@ -81,64 +86,115 @@ public:
         return NULL;
     }
 
-    static void* echo_proc(void *lfd_ptr) {
-        const int max_count_chater = 500;
-        static struct pollfd *chat_pollfd_ptr = nullptr;
-        chat_pollfd_ptr = (struct pollfd*)calloc(500, sizeof(struct pollfd));
-        for (int i = 0; i < max_count_chater; ++i) {
-                chat_pollfd_ptr[i].fd = -1;
-                /* dont init events*/
-        }
+        static void* echo_proc(void *lfd_ptr) {
 
-        int lfd = *(int*) lfd_ptr;
-        char reqLenStr[INT_LEN];            /* Length of requested sequence */
+                /* epoll */
+                const int max_events = 500;
+                const int max_count_chater = max_events;
+                const int max_buffer = 1024*1024;
+                static int epfd,
+                    ready;
+                static struct epoll_event epev;
+                static struct epoll_event evlist[max_events];
+                epfd = epoll_create(max_events);
+                if (epfd == -1) {
+                        MDebugLog("epoll_create") << endl;
+                }
 
-        static vector<int> client_fds;
-        static pid_t ppid = getpid();
 
-        struct sigaction action;
-        sigemptyset(&action.sa_mask);
-        action.sa_flags = SA_RESTART | SA_SIGINFO;
-        static int count_chat = -1;
+                int lfd = *(int*) lfd_ptr;
+                char reqLenStr[INT_LEN];            /* Length of requested sequence */
 
-        void *res;
+                static vector<int> client_fds;
+                static pid_t ppid = getpid();
 
-        /* handler */
-        action.sa_sigaction = [](int sig, siginfo_t *siginfo_ptr, void* ucontext) {
-            /* the pid must be static to be visiable to handler of signal */
-            if (siginfo_ptr->si_pid == ppid) {
-                int client_fd = siginfo_ptr->si_value.sival_int;
+                struct sigaction action;
+                sigemptyset(&action.sa_mask);
+                action.sa_flags = SA_RESTART | SA_SIGINFO;
+                static int count_chat = -1;
+
                 void *res;
 
-                client_fds.push_back(client_fd);
-                cout << "Welcome new user! " << client_fd << endl;
-                
-#if 1
-                count_chat++;
-                if (count_chat >= max_count_chater) {
-                        cout << "there exists more than " << max_count_chater << " chaters" << endl;
-                        return;
-                }
-                chat_pollfd_ptr[count_chat].fd = client_fd;
-                chat_pollfd_ptr[count_chat].events = POLLIN /* read */ | POLLOUT /* write */;
+                /* handler */
+                action.sa_sigaction = 
+                        [](int sig, siginfo_t *siginfo_ptr, void* ucontext) {
+                    /* the pid must be static to be visiable to handler of signal */
+                    if (siginfo_ptr->si_pid == ppid) {
+                        int client_fd = siginfo_ptr->si_value.sival_int;
+                        void *res;
 
-                
-#endif
+                        client_fds.push_back(client_fd);
+                        cout << "Welcome new user! " << client_fd << endl;
+                        
+                        count_chat++;
+                        if (count_chat >= max_count_chater) {
+                                cout 
+                                        << "there exists more than " 
+                                        << max_count_chater 
+                                        << " chaters" << endl;
+                                return;
+                        }
+
 #if 1
-                pthread_t worker_echo;
-                int ret_pc = pthread_create(&worker_echo, NULL, echo, &client_fd);
-                if (ret_pc != 0) {
-                    printf("wrong\n");
-                    exit(1);
-                }
+                        epev.events = EPOLLIN | EPOLLET;/* edge trager  */
+                        epev.data.fd = client_fd;
+                        epoll_ctl
+                                (
+                                 epfd, EPOLL_CTL_ADD,
+                                 client_fd,
+                                 &epev
+                                );
+
 #endif
-                /* TODO Task queue */
+
+#if 0
+                        pthread_t worker_echo;
+                        int ret_pc = pthread_create(
+                                        &worker_echo, 
+                                        NULL, 
+                                        echo, 
+                                        &client_fd);
+                        if (ret_pc != 0) {
+                            printf("wrong\n");
+                            exit(1);
+                        }
+#endif
+                        /* TODO Task queue */
+                    }
+                };
+                sigaction(SIGUSR1, &action, NULL);
+                while (1) {
+                        ready = epoll_wait(epfd, evlist, max_events, -1);
+                        for (int i = 0; i < ready; i++) {
+                                if (evlist[i].events & EPOLLIN) {
+                                        char buffer_epoll[max_buffer];
+                                        int lenread = 
+                                                read(
+                                                evlist[i].data.fd,
+                                                buffer_epoll,
+                                                max_buffer);
+                                        if (lenread > 0) {
+                                                buffer_epoll[lenread] = '\0';
+                                                cout << buffer_epoll << endl;
+                                        }
+                                        else {
+                                                cout 
+                                                        << "exit " 
+                                                        << evlist[i].data.fd 
+                                                        << endl;
+                                                /* close this file discriptor since 
+                                                 * the sources of fd is not cheap.*/
+                                                close(evlist[i].data.fd);
+
+                                        }
+                                } else if (evlist[i].events & (EPOLLHUP | EPOLLERR)) {
+                                        cout << "EPOLLHUP EPOLLERR\n";
+                                }
+                        }
+                }
+
+                for (;;) pause();// pause - suspend the thread until a signal is received
             }
-        };
-        sigaction(SIGUSR1, &action, NULL);
-
-        for (;;) pause();// pause - suspend the thread until a signal is received
-    }
 };
 
 
